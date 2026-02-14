@@ -7,6 +7,27 @@
 let pymupdfInstance: any = null;
 let loadingPromise: Promise<any> | null = null;
 
+function resolvePublicAssetPath(assetPath: string): string {
+  if (typeof window === 'undefined') return assetPath;
+
+  const normalizedAssetPath = assetPath.startsWith('/') ? assetPath : `/${assetPath}`;
+  const scripts = Array.from(document.querySelectorAll('script[src]')) as HTMLScriptElement[];
+  const nextScript = scripts.find((script) => script.src.includes('/_next/'));
+
+  if (!nextScript) return normalizedAssetPath;
+
+  try {
+    const scriptUrl = new URL(nextScript.src);
+    const nextIndex = scriptUrl.pathname.indexOf('/_next/');
+    if (nextIndex <= 0) return normalizedAssetPath;
+
+    const basePath = scriptUrl.pathname.slice(0, nextIndex).replace(/\/$/, '');
+    return `${basePath}${normalizedAssetPath}`;
+  } catch {
+    return normalizedAssetPath;
+  }
+}
+
 /**
  * Load PyMuPDF using Pyodide directly
  */
@@ -21,7 +42,10 @@ export async function loadPyMuPDF(): Promise<any> {
 
   loadingPromise = (async () => {
     try {
-      const basePath = `${window.location.origin}/pymupdf-wasm/`;
+      const basePath = new URL(
+        resolvePublicAssetPath('/pymupdf-wasm/'),
+        window.location.origin
+      ).toString();
 
       // Dynamically import Pyodide as ES module
       const pyodideModule = await import(/* webpackIgnore: true */ `${basePath}pyodide.js`);
@@ -1008,8 +1032,20 @@ for page_num in range(len(doc)):
                 
                 # Only replace if we actually reduced size
                 if len(new_image_bytes) < len(image_bytes) * 0.9:
-                    # Update the image in the PDF
+                    # Update the image stream and its dictionary to match JPEG format
                     doc.update_stream(xref, new_image_bytes)
+                    # Update the image XObject dictionary to reflect JPEG encoding
+                    doc.xref_set_key(xref, "Filter", "/DCTDecode")
+                    doc.xref_set_key(xref, "ColorSpace", "/DeviceRGB")
+                    doc.xref_set_key(xref, "BitsPerComponent", "8")
+                    # Update dimensions if image was resized
+                    doc.xref_set_key(xref, "Width", str(pix.width))
+                    doc.xref_set_key(xref, "Height", str(pix.height))
+                    # Remove DecodeParms that may be left from PNG/Flate encoding
+                    try:
+                        doc.xref_set_key(xref, "DecodeParms", "null")
+                    except:
+                        pass
         except Exception as e:
             # Skip images that can't be processed
             pass
